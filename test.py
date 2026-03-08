@@ -9,4 +9,7 @@ class Test(Scene):
         triangle = Triangle().shift(RIGHT*2)
         self.play(Create(square))
         self.play(Create(triangle))
+        print("Animation complete")
+        p=Text("I love you")
+        self.play(Write(p))
         self.wait(1)
