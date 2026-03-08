@@ -3,114 +3,141 @@ import numpy as np
 
 class QuantumTunneling(ThreeDScene):
     def construct(self):
-        # 1. 设置坐标系
-        axes = ThreeDAxes()
+        # --- 1. 初始化坐标系 ---
+        axes = ThreeDAxes(x_range=[-6, 6], y_range=[-6, 6], z_range=[-2, 4])
         
-        # 势阱函数 (U型剖面)
-        def pit_func(x):
+        # 定义势阱函数 (抛物线形)
+        def pit_func_3d(u, v):
+            return 0.1 * (u**2 + v**2)
+
+        def pit_func_2d(x):
             return 0.2 * x**2
 
-        # 使用 Surface 代替 ParametricSurface
+        # 3D 势阱表面
         pit_3d = Surface(
-            lambda u, v: np.array([u, v, 0.2 * (u**2 + v**2)]),
-            u_range=[-3, 3], v_range=[-3, 3],
-            checkerboard_colors=[BLUE_D, BLUE_E],
-            fill_opacity=0.6
+            lambda u, v: np.array([u, v, pit_func_3d(u, v)]),
+            u_range=[-4, 4], v_range=[-4, 4],
+            checkerboard_colors=[BLUE_D, BLUE_E], fill_opacity=0.7
         )
 
-        # 2D 剖面曲线
-        pit_curve = axes.plot(pit_func, x_range=[-4, 4], color=BLUE)
-
-        # --- 第一阶段：3D展示势阱与经典小球 ---
+        # --- 2. 3D 场景：经典小球滚动 ---
         self.set_camera_orientation(phi=75 * DEGREES, theta=-45 * DEGREES)
         self.add(axes)
         self.play(Create(pit_3d), run_time=2)
-        
-        # 经典小球 (Sphere 在 3D 中效果更好)
-        ball = Sphere(radius=0.2, color=RED).move_to(axes.c2p(-2, 0, pit_func(-2)))
-        self.add(ball)
 
-        # 模拟小球在势阱中滚动 (经典物理：无法越过边缘)
-        path_tracker = ValueTracker(-2)
-        ball.add_updater(lambda m: m.move_to(axes.c2p(path_tracker.get_value(), 0, pit_func(path_tracker.get_value()))))
+        # 创建 3D 实心小球
+        ball = Sphere(radius=0.2, color=RED).set_sheen(0.5, direction=UL)
         
-        # 来回摆动两次
-        self.play(path_tracker.animate.set_value(2), run_time=1.5, rate_func=there_and_back)
-        self.play(path_tracker.animate.set_value(2), run_time=1.5, rate_func=there_and_back)
+        # 小球运动轨迹控制 (使用 ValueTracker 模拟简谐运动)
+        time_tracker = ValueTracker(0)
+        ball.add_updater(lambda m: m.move_to(axes.c2p(
+            2.5 * np.cos(time_tracker.get_value() * 2), # X轴往复
+            0,                                          # Y轴固定
+            pit_func_3d(2.5 * np.cos(time_tracker.get_value() * 2), 0) # Z轴随深度变化
+        )))
+
+        self.add(ball)
+        # 滚动约 6 秒
+        self.play(time_tracker.animate.set_value(6), run_time=6, rate_func=linear)
         ball.clear_updaters()
 
-        # --- 第二阶段：3D转2D剖面 ---
-        self.move_camera(phi=90 * DEGREES, theta=-90 * DEGREES, run_time=2)
-        self.begin_ambient_camera_rotation(rate=0) # 停止任何潜在旋转
-        self.wait(0.5)
+        # --- 3. 视角转换：3D -> 2D ---
+        # 准备 2D 的坑
+        pit_curve = axes.plot(pit_func_2d, x_range=[-4, 4], color=BLUE_A)
         
-        # 移除 3D 曲面，显示 2D 曲线
+        self.move_camera(phi=90 * DEGREES, theta=-90 * DEGREES, run_time=3)
         self.play(
             FadeOut(pit_3d),
             Create(pit_curve),
-            ball.animate.move_to(axes.c2p(-2, 0, 0)) # 将球降到 2D 平面
+            ball.animate.move_to(axes.c2p(-2.5, 0, pit_func_2d(-2.5))),
+            run_time=2
         )
         
-        # 绘制势垒（墙壁）
-        barrier = Rectangle(width=0.8, height=3, fill_opacity=0.8, color=GREY_B).move_to(axes.c2p(2, 1.5, 0))
-        barrier_label = Text("势垒", font_size=24, color=GREY_B).next_to(barrier, UP)
-        self.play(Create(barrier), Write(barrier_label))
+        # 2D 滚动演示
+        self.play(path_track := ValueTracker(-2.5))
+        ball.add_updater(lambda m: m.move_to(axes.c2p(
+            path_track.get_value(), 0, pit_func_2d(path_track.get_value())
+        )))
+        self.play(path_track.animate.set_value(2.5), run_time=1.5, rate_func=there_and_back)
+        ball.clear_updaters()
 
-        # --- 第三阶段：经典转量子 (概率云) ---
-        # 创建一团点云
-        cloud = VGroup(*[Dot(radius=0.04, color=WHITE) for _ in range(100)])
-        cloud.move_to(ball.get_center())
-        
+        # --- 4. 经典转量子：概率云 ---
+        # 创建一个由大量点组成的概率云
+        num_dots = 400
+        cloud = VGroup(*[
+            Dot(radius=0.03, color=WHITE).move_to(ball.get_center()) 
+            for _ in range(num_dots)
+        ])
+
         def update_cloud(m):
+            # 模拟高斯分布的概率云
+            center = ball.get_center()
             for dot in m:
-                # 在球体中心附近随机分布
-                dot.move_to(ball.get_center() + np.random.normal(0, 0.35, 3))
-                dot.set_opacity(np.random.random())
+                # 随机散布在中心周围，亮度随距离衰减
+                offset = np.random.normal(0, 0.4, 3)
+                dot.move_to(center + offset)
+                dist = np.linalg.norm(offset)
+                dot.set_opacity(max(0, 1 - dist/0.8))
 
-        self.play(FadeOut(ball), FadeIn(cloud))
+        self.play(FadeIn(cloud), ball.animate.set_opacity(0))
         cloud.add_updater(update_cloud)
-        
-        # 概率云向墙移动
-        self.play(ball.animate.move_to(axes.c2p(1.5, 0, 0)), run_time=2)
+        self.play(ball.animate.move_to(axes.c2p(0, 0, 0.5)), run_time=2)
         self.wait(1)
-        cloud.remove_updater(update_cloud)
-
-        # --- 第四阶段：波函数与隧穿 ---
+        
+        # --- 5. 波函数演化与隧穿 ---
+        # 隐藏概率云，引入波函数
         self.play(FadeOut(cloud), FadeOut(pit_curve))
         
-        # 定义波函数参数
-        b_start = 1.6  # 墙左侧
-        b_end = 2.4    # 墙右侧
-        k = 8          # 波数
-        kappa = 4      # 衰减系数
-        time_tracker = ValueTracker(0)
+        # 势垒参数
+        barrier_x = 2.0
+        barrier_width = 0.6
+        barrier = Rectangle(width=barrier_width, height=3, color=GREY_B, fill_opacity=0.5)\
+                  .move_to(axes.c2p(barrier_x + barrier_width/2, 1, 0))
+        self.play(Create(barrier))
 
-        def get_wave():
-            t = time_tracker.get_value()
-            def wave_logic(x):
-                if x < b_start:
-                    # 入射波
-                    return 0.6 * np.sin(k * x - t)
-                elif b_start <= x <= b_end:
-                    # 势垒内指数衰减 (连续性衔接)
-                    amp_at_edge = 0.6 * np.sin(k * b_start - t)
-                    return amp_at_edge * np.exp(-kappa * (x - b_start))
+        wave_time = ValueTracker(0)
+        k = 10      # 波数
+        kappa = 5   # 势垒内衰减系数
+
+        def get_tunneling_wave():
+            t = wave_time.get_value()
+            def wave_func(x):
+                # 1. 势垒左侧：入射波 + 反射波 (干涉形成驻波趋势)
+                if x < barrier_x:
+                    # 简化展示：向右行进的波包
+                    return 0.8 * np.exp(-(x + 2 - t*0.5)**2) * np.sin(k * x - 5 * t)
+                # 2. 势垒内部：指数衰减
+                elif barrier_x <= x <= barrier_x + barrier_width:
+                    amp_at_edge = 0.8 * np.exp(-(barrier_x + 2 - t*0.5)**2) * np.sin(k * barrier_x - 5 * t)
+                    return amp_at_edge * np.exp(-kappa * (x - barrier_x))
+                # 3. 势垒右侧：透射波 (极微弱)
                 else:
-                    # 隧穿后的微弱波
-                    amp_at_exit = 0.6 * np.sin(k * b_start - t) * np.exp(-kappa * (b_end - b_start))
-                    return amp_at_exit * np.sin(k * (x - b_end) + (k * b_start - t))
+                    amp_at_exit = 0.8 * np.exp(-(barrier_x + 2 - t*0.5)**2) * \
+                                  np.sin(k * barrier_x - 5 * t) * np.exp(-kappa * barrier_width)
+                    return amp_at_exit * np.sin(k * (x - (barrier_x + barrier_width)) + (k * barrier_x - 5 * t))
 
-            return axes.plot(wave_logic, x_range=[-4, 5], color=YELLOW)
+            return axes.plot(wave_func, x_range=[-5, 5], color=YELLOW)
 
-        wave_mobject = always_redraw(get_wave)
+        wave_mobject = always_redraw(get_tunneling_wave)
         self.add(wave_mobject)
         
-        # 播放波函数动画
-        self.play(time_tracker.animate.set_value(15), run_time=8, rate_func=linear)
-
-        # 标注隧穿现象
-        arrow = Arrow(start=axes.c2p(3.5, 1, 0), end=axes.c2p(3, 0.2, 0), color=RED)
-        tunnel_text = Text("量子隧穿", color=RED, font_size=30).next_to(arrow, UP)
-        self.play(Create(arrow), Write(tunnel_text))
+        # 波函数向前推进并撞击
+        self.play(wave_time.animate.set_value(8), run_time=6, rate_func=linear)
         
-        self.wait(2)
+        # --- 6. 停顿与局部放大 ---
+        # 停止动画并放大势垒右侧
+        self.wait(0.5)
+        
+        # 放大视野
+        focus_point = axes.c2p(barrier_x + barrier_width, 0, 0)
+        self.play(
+            self.camera.frame.animate.set_width(3).move_to(focus_point),
+            run_time=2
+        )
+        
+        # 添加标注，强调微弱波函数
+        label = Text("微弱的透射波 (隧穿)", font_size=14, color=YELLOW).next_to(focus_point, UP, buff=0.5)
+        arrow = Arrow(start=focus_point + RIGHT*0.5 + UP*0.5, end=focus_point + RIGHT*0.1, color=RED, stroke_width=2)
+        
+        self.play(Write(label), Create(arrow))
+        self.wait(3)
